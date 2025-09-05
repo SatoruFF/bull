@@ -51,7 +51,7 @@ local rcall = redis.call
 local function decrementRateLimiter(rateLimiterKey, jobId, groupKey, mode)
     if mode == "count" and rateLimiterKey then
         local counterKey = rateLimiterKey .. ":counter"
-        
+
         -- Rate limit by group?
         if groupKey then
             if type(groupKey) == "string" then
@@ -63,7 +63,7 @@ local function decrementRateLimiter(rateLimiterKey, jobId, groupKey, mode)
                 end
             end
         end
-        
+
         -- Decrement the counter
         local currentCount = tonumber(rcall("GET", counterKey)) or 0
         if currentCount > 0 then
@@ -83,13 +83,14 @@ if rcall("EXISTS", KEYS[3]) == 1 then -- // Make sure job exists
 
     if numRemovedElements < 1 then return -3 end
 
-    -- ДОБАВЛЕНО: Декремент счетчика rate limiter
     if KEYS[10] then
         decrementRateLimiter(KEYS[10], ARGV[1], ARGV[13], ARGV[14])
     end
 
     local debounceId = rcall("HGET", KEYS[3], "deid")
-    removeDebounceKeyIfNeeded(ARGV[9], debounceId)
+    if debounceId then
+        removeDebounceKeyIfNeeded(ARGV[9], debounceId)
+    end
 
     -- Remove job?
     local keepJobs = cmsgpack.unpack(ARGV[6])
@@ -99,7 +100,6 @@ if rcall("EXISTS", KEYS[3]) == 1 then -- // Make sure job exists
     local timestamp = ARGV[2]
 
     if maxCount ~= 0 then
-
         -- Add to complete/failed set
         rcall("ZADD", targetSet, timestamp, ARGV[1])
         rcall("HMSET", KEYS[3], ARGV[3], ARGV[4], "finishedOn", timestamp) -- "returnvalue" / "failedReason" and "finishedOn"
@@ -133,15 +133,15 @@ if rcall("EXISTS", KEYS[3]) == 1 then -- // Make sure job exists
 
     -- Collect metrics
     if ARGV[12] ~= "" then
-      collectMetrics(KEYS[9], KEYS[9]..':data', ARGV[12], timestamp)
+        collectMetrics(KEYS[9], KEYS[9] .. ':data', ARGV[12], timestamp)
     end
 
     rcall("PUBLISH", targetSet, ARGV[7])
 
-    -- Try to get next job to avoid an extra roundtrip if the queue is not closing, 
+    -- Try to get next job to avoid an extra roundtrip if the queue is not closing,
     -- and not rate limited.
     if (ARGV[8] == "1") then
-        -- move from wait to active 
+        -- move from wait to active
         local jobId = rcall("RPOPLPUSH", KEYS[4], KEYS[1])
         if jobId then
             local jobKey = ARGV[9] .. jobId
@@ -154,7 +154,7 @@ if rcall("EXISTS", KEYS[3]) == 1 then -- // Make sure job exists
             rcall("PUBLISH", KEYS[6], jobId)
             rcall("HSET", jobKey, "processedOn", ARGV[2])
 
-            return {rcall("HGETALL", jobKey), jobId} -- get job data
+            return { rcall("HGETALL", jobKey), jobId } -- get job data
         end
     end
 
