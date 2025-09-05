@@ -1,15 +1,15 @@
 .PHONY: build
 
 build:
-	@echo "🔹 Очистка старых скриптов..."
+	@echo "🔹 clean proc..."
 	npm run clean:scripts
 	rm -rf rawScripts
-	@echo "🔹 Проверка папки rawScripts..."
+	@echo "🔹 check dir rawScripts..."
 	if [ ! -d rawScripts ]; then mkdir rawScripts; fi
-	@echo "🔹 Копирование Lua-скриптов..."
-	cp -u lib/commands/*.lua rawScripts/ || echo "Lua скрипты уже скопированы"
-	@echo "🔹 Генерация JS-обёрток Lua..."
+	@echo "🔹 copy Lua..."
+	npm run generate:raw:scripts
+	@echo "🔹 Generate JS Lua..."
 	npm run transform:commands
-	@echo "✅ Сборка завершена"
+	@echo "✅ Build success"
 	npm link
-	@echo "✅ Прилинковка"
+	@echo "✅ Link"
