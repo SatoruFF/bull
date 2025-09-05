@@ -30,120 +30,160 @@
       ARGV[7] optional time unit (rate limiter)
       ARGV[8] optional do not do anything with job if rate limit hit
       ARGV[9] optional rate limit by key
-]]
+      ARGV[10] optional mode ("count" or "time")
+]] local rcall = redis.call
 
-local rcall = redis.call
+local rateLimit = function(jobId, maxJobs, mode)
+    local rateLimiterKey = KEYS[6];
+    local limiterIndexTable = rateLimiterKey .. ":index"
 
-local rateLimit = function(jobId, maxJobs)
-  local rateLimiterKey = KEYS[6];
-  local limiterIndexTable = rateLimiterKey .. ":index"
-
-  -- Rate limit by group?
-  if(ARGV[9]) then
-    local group = string.match(jobId, "[^:]+$")
-    if group ~= nil then
-      rateLimiterKey = rateLimiterKey .. ":" .. group
-    end
-  end
-
-  -- -- key for storing rate limited jobs
-  -- When a job has been previously rate limited it should be part of this set
-  -- if the job is back here means that the delay time for this job has passed and now we should
-  -- be able to process it again.
-  local limitedSetKey = rateLimiterKey .. ":limited"
-  local delay = 0
-
-  -- -- Check if job was already limited
-  local isLimited = rcall("SISMEMBER", limitedSetKey, jobId);
-
-  if isLimited == 1 then
-     -- Remove from limited zset since we are going to try to process it
-     rcall("SREM", limitedSetKey, jobId)
-     rcall("HDEL", limiterIndexTable, jobId)
-  else
-    -- If not, check if there are any limited jobs
-    -- If the job has not been rate limited, we should check if there are any other rate limited jobs, because if that
-    -- is the case we do not want to process this job, just calculate a delay for it and put it to "sleep".
-    local numLimitedJobs = rcall("SCARD", limitedSetKey)
-
-    if numLimitedJobs > 0 then
-      -- Note, add some slack to compensate for drift.
-      delay = ((numLimitedJobs * ARGV[7] * 1.1) /  maxJobs) + tonumber(rcall("PTTL", rateLimiterKey))
-    end
-  end
-
-  local jobCounter = tonumber(rcall("GET", rateLimiterKey))
-  if(jobCounter == nil) then
-    jobCounter = 0
-  end
-  -- check if rate limit hit
-  if (delay == 0) and (jobCounter >= maxJobs) then
-    -- Seems like there are no current rated limited jobs, but the jobCounter has exceeded the number of jobs for this unit of time so we need to rate limit this job.
-    local exceedingJobs = jobCounter - maxJobs
-    delay = tonumber(rcall("PTTL", rateLimiterKey)) + ((exceedingJobs) * ARGV[7]) / maxJobs
-  end
-
-  if delay > 0 then
-    local bounceBack = ARGV[8]
-    if bounceBack == 'false' then
-      local timestamp = delay + tonumber(ARGV[4])
-      -- put job into delayed queue
-      rcall("ZADD", KEYS[7], timestamp * 0x1000 + bit.band(jobCounter, 0xfff), jobId)
-      rcall("PUBLISH", KEYS[7], timestamp)
-      rcall("SADD", limitedSetKey, jobId)
-
-      -- store index so that we can delete rate limited data
-      rcall("HSET", limiterIndexTable, jobId, limitedSetKey)
-
+    -- Rate limit by group?
+    if (ARGV[9]) then
+        -- Если ARGV[9] - строка, используем его как groupKey
+        if type(ARGV[9]) == "string" then
+            rateLimiterKey = rateLimiterKey .. ":" .. ARGV[9]
+            -- Если ARGV[9] - true, используем группировку по последней части jobId
+        elseif ARGV[9] == "true" then
+            local group = string.match(jobId, "[^:]+$")
+            if group ~= nil then
+                rateLimiterKey = rateLimiterKey .. ":" .. group
+            end
+        end
     end
 
-    -- remove from active queue
-    rcall("LREM", KEYS[2], 1, jobId)
-    return true
-  else
-    -- false indicates not rate limited
-    -- increment jobCounter only when a job is not rate limited
-    if (jobCounter == 0) then
-      rcall("PSETEX", rateLimiterKey, ARGV[7], 1)
+    -- New logic for the counter mode
+    if mode == "count" then
+        -- Creating a unique counter key for the current limiter
+        local counterKey = rateLimiterKey .. ":counter"
+
+        -- Get the current counter value
+        local currentCount = tonumber(rcall("GET", counterKey)) or 0
+
+        -- Check if the jobs limit has been exceeded
+        if currentCount >= maxJobs then
+            -- The counter limit has been exceeded - the job must be postponed
+            local timestamp = tonumber(ARGV[4]) + 1000
+
+            -- Putting the job in the delayed queue
+            rcall("ZADD", KEYS[7], timestamp * 0x1000, jobId)
+
+            -- We publish an event with a timestamp to notify subscribers
+            rcall("PUBLISH", KEYS[7], timestamp)
+
+            -- Removing the job from the active queue so that it is not processed
+            rcall("LREM", KEYS[2], 1, jobId)
+
+            -- Return true, which means the job was rate limited
+            return true
+        end
+
+        -- Increment the counter since we're allowing this job
+        rcall("INCR", counterKey)
+
+        -- If the limit is not exceeded, we continue to complete the job
+        return false
+    end
+
+    -- Existing time-based rate limiting logic
+    local limitedSetKey = rateLimiterKey .. ":limited"
+    local delay = 0
+
+    -- -- key for storing rate limited jobs
+    -- When a job has been previously rate limited it should be part of this set
+    -- if the job is back here means that the delay time for this job has passed and now we should
+    -- be able to process it again.
+
+    -- -- Check if job was already limited
+    local isLimited = rcall("SISMEMBER", limitedSetKey, jobId);
+
+    if isLimited == 1 then
+        -- Remove from limited zset since we are going to try to process it
+        rcall("SREM", limitedSetKey, jobId)
+        rcall("HDEL", limiterIndexTable, jobId)
     else
-      rcall("INCR", rateLimiterKey)
+        -- If not, check if there are any limited jobs
+        -- If the job has not been rate limited, we should check if there are any other rate limited jobs, because if that
+        -- is the case we do not want to process this job, just calculate a delay for it and put it to "sleep".
+        local numLimitedJobs = rcall("SCARD", limitedSetKey)
+
+        if numLimitedJobs > 0 then
+            -- Note, add some slack to compensate for drift.
+            delay = ((numLimitedJobs * ARGV[7] * 1.1) / maxJobs) + tonumber(rcall("PTTL", rateLimiterKey))
+        end
     end
-    return false
-  end
+
+    local jobCounter = tonumber(rcall("GET", rateLimiterKey))
+    if (jobCounter == nil) then
+        jobCounter = 0
+    end
+    -- check if rate limit hit
+    if (delay == 0) and (jobCounter >= maxJobs) then
+        -- Seems like there are no current rated limited jobs, but the jobCounter has exceeded the number of jobs for this unit of time so we need to rate limit this job.
+        local exceedingJobs = jobCounter - maxJobs
+        delay = tonumber(rcall("PTTL", rateLimiterKey)) + ((exceedingJobs) * ARGV[7]) / maxJobs
+    end
+
+    if delay > 0 then
+        local bounceBack = ARGV[8]
+        if bounceBack ~= 'true' then
+            local timestamp = delay + tonumber(ARGV[4])
+            -- put job into delayed queue
+            rcall("ZADD", KEYS[7], timestamp * 0x1000 + bit.band(jobCounter, 0xfff), jobId)
+            rcall("PUBLISH", KEYS[7], timestamp)
+            rcall("SADD", limitedSetKey, jobId)
+
+            -- store index so that we can delete rate limited data
+            rcall("HSET", limiterIndexTable, jobId, limitedSetKey)
+            
+        end
+
+        -- remove from active queue
+        rcall("LREM", KEYS[2], 1, jobId)
+        return true
+    else
+        -- false indicates not rate limited
+        -- increment jobCounter only when a job is not rate limited
+        if (jobCounter == 0) then
+            rcall("PSETEX", rateLimiterKey, ARGV[7], 1)
+        else
+            rcall("INCR", rateLimiterKey)
+        end
+        return false
+    end
 end
 
 local jobId = ARGV[5]
 
 if jobId ~= '' then
-  -- clean stalled key
-  rcall("SREM", KEYS[5], jobId)
+    -- clean stalled key
+    rcall("SREM", KEYS[5], jobId)
 else
-  -- move from wait to active
-  jobId = rcall("RPOPLPUSH", KEYS[1], KEYS[2])
+    -- move from wait to active
+    jobId = rcall("RPOPLPUSH", KEYS[1], KEYS[2])
 end
 
 if jobId then
-  -- Check if we need to perform rate limiting.
-  local maxJobs = tonumber(ARGV[6])
+    -- Check if we need to perform rate limiting.
+    local maxJobs = tonumber(ARGV[6])
 
-  if maxJobs then
-    if rateLimit(jobId, maxJobs) then
-       return
+    if maxJobs then
+        local mode = ARGV[10] or "time" -- По умолчанию время, если не указан режим
+        if rateLimit(jobId, maxJobs, mode) then
+            return
+        end
     end
-  end
 
-  -- get a lock
-  local jobKey = ARGV[1] .. jobId
-  local lockKey = jobKey .. ':lock'
-  rcall("SET", lockKey, ARGV[2], "PX", ARGV[3])
+    -- get a lock
+    local jobKey = ARGV[1] .. jobId
+    local lockKey = jobKey .. ':lock'
+    rcall("SET", lockKey, ARGV[2], "PX", ARGV[3])
 
-  -- remove from priority
-  rcall("ZREM", KEYS[3], jobId)
-  rcall("PUBLISH", KEYS[4], jobId)
-  rcall("HSET", jobKey, "processedOn", ARGV[4])
+    -- remove from priority
+    rcall("ZREM", KEYS[3], jobId)
+    rcall("PUBLISH", KEYS[4], jobId)
+    rcall("HSET", jobKey, "processedOn", ARGV[4])
 
-  return {rcall("HGETALL", jobKey), jobId} -- get job data
+    return {rcall("HGETALL", jobKey), jobId} -- get job data
 else
-  rcall("PUBLISH", KEYS[8], "")
+    rcall("PUBLISH", KEYS[8], "")
 end
-

@@ -8,15 +8,13 @@
       KEYS[1] active key
       KEYS[2] completed/failed key
       KEYS[3] jobId key
-
       KEYS[4] wait key
       KEYS[5] priority key
       KEYS[6] active event key
-
       KEYS[7] delayed key
       KEYS[8] stalled key
-
       KEYS[9] metrics key
+      KEYS[10] rate limiter key  -- ДОБАВЛЕН
 
       ARGV[1]  jobId
       ARGV[2]  timestamp
@@ -30,6 +28,8 @@
       ARGV[10] lock token
       ARGV[11] lock duration in milliseconds
       ARGV[12] maxMetricsSize
+      ARGV[13] rate limit group key (optional)  -- ДОБАВЛЕН
+      ARGV[14] rate limit mode (optional)       -- ДОБАВЛЕН
 
      Output:
       0 OK
@@ -47,6 +47,31 @@ local rcall = redis.call
 --- @include "includes/removeLock"
 --- @include "includes/removeDebounceKeyIfNeeded"
 
+-- Function to decrement rate limiter counter
+local function decrementRateLimiter(rateLimiterKey, jobId, groupKey, mode)
+    if mode == "count" and rateLimiterKey then
+        local counterKey = rateLimiterKey .. ":counter"
+        
+        -- Rate limit by group?
+        if groupKey then
+            if type(groupKey) == "string" then
+                counterKey = rateLimiterKey .. ":" .. groupKey .. ":counter"
+            elseif groupKey == "true" then
+                local group = string.match(jobId, "[^:]+$")
+                if group ~= nil then
+                    counterKey = rateLimiterKey .. ":" .. group .. ":counter"
+                end
+            end
+        end
+        
+        -- Decrement the counter
+        local currentCount = tonumber(rcall("GET", counterKey)) or 0
+        if currentCount > 0 then
+            rcall("DECRBY", counterKey, 1)
+        end
+    end
+end
+
 if rcall("EXISTS", KEYS[3]) == 1 then -- // Make sure job exists
     local errorCode = removeLock(KEYS[3], KEYS[8], ARGV[5], ARGV[1])
     if errorCode < 0 then
@@ -57,6 +82,11 @@ if rcall("EXISTS", KEYS[3]) == 1 then -- // Make sure job exists
     local numRemovedElements = rcall("LREM", KEYS[1], -1, ARGV[1])
 
     if numRemovedElements < 1 then return -3 end
+
+    -- ДОБАВЛЕНО: Декремент счетчика rate limiter
+    if KEYS[10] then
+        decrementRateLimiter(KEYS[10], ARGV[1], ARGV[13], ARGV[14])
+    end
 
     local debounceId = rcall("HGET", KEYS[3], "deid")
     removeDebounceKeyIfNeeded(ARGV[9], debounceId)
