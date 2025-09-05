@@ -59,7 +59,8 @@
     "prettier": "^1.19.1",
     "rimraf": "^3.0.2",
     "semantic-release": "^17.4.2",
-    "sinon": "^7.5.0"
+    "sinon": "^7.5.0",
+    "typescript": "^5.9.2"
   },
   "scripts": {
     "clean:scripts": "rimraf rawScripts lib/scripts",
