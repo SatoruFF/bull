@@ -3,6 +3,7 @@
 build:
 	@echo "🔹 clean proc..."
 	npm run clean:scripts
+	@echo "🔹 remove raw scripts"
 	rm -rf rawScripts
 	@echo "🔹 check dir rawScripts..."
 	if [ ! -d rawScripts ]; then mkdir rawScripts; fi
