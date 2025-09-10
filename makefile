@@ -12,5 +12,9 @@ build:
 	@echo "🔹 Generate JS Lua..."
 	npm run transform:commands
 	@echo "✅ Build success"
-	npm link
-	@echo "✅ Link"
+
+link:
+	npm run link
+
+flush:
+	redis-cli FLUSHALL

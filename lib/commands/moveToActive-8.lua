@@ -12,11 +12,11 @@
       KEYS[3] priority key
       KEYS[4] active event key
       KEYS[5] stalled key
-
+      
       -- Rate limiting
       KEYS[6] rate limiter key
       KEYS[7] delayed key
-
+      
       --
       KEYS[8] drained key
 
@@ -25,29 +25,30 @@
       ARGV[3] lock duration in milliseconds
       ARGV[4] timestamp
       ARGV[5] optional jobid
-
       ARGV[6] optional jobs per time unit (rate limiter)
       ARGV[7] optional time unit (rate limiter)
       ARGV[8] optional do not do anything with job if rate limit hit
-      ARGV[9] optional rate limit by key
-      ARGV[10] optional mode ("count" or "time")
-]] local rcall = redis.call
+      ARGV[9] optional mode ("count" or "time")
+      ARGV[10] optional rate limit by key
+]]
+local rcall = redis.call
 
-local rateLimit = function(jobId, maxJobs, mode)
-    local rateLimiterKey = KEYS[6];
+local function rateLimit(jobId, maxJobs, mode)
+    local rateLimiterKey = KEYS[6]
     local limiterIndexTable = rateLimiterKey .. ":index"
 
     -- Rate limit by group?
-    if (ARGV[9]) then
-        -- Если ARGV[9] - строка, используем его как groupKey
-        if type(ARGV[9]) == "string" then
-            rateLimiterKey = rateLimiterKey .. ":" .. ARGV[9]
-            -- Если ARGV[9] - true, используем группировку по последней части jobId
-        elseif ARGV[9] == "true" then
+    if (ARGV[10] and ARGV[10] ~= "") then
+        -- Если ARGV[10] равно "true", используем группировку по последней части jobId
+        -- АРГУМЕНТЫ В РЕДИСЕ ВСЕГДА СТРОКИ
+        if ARGV[10] == "true" or ARGV[10] == true then
             local group = string.match(jobId, "[^:]+$")
             if group ~= nil then
                 rateLimiterKey = rateLimiterKey .. ":" .. group
             end
+        else
+            -- Иначе используем ARGV[10] как groupKey
+            rateLimiterKey = rateLimiterKey .. ":" .. ARGV[10]
         end
     end
 
@@ -94,7 +95,7 @@ local rateLimit = function(jobId, maxJobs, mode)
     -- be able to process it again.
 
     -- -- Check if job was already limited
-    local isLimited = rcall("SISMEMBER", limitedSetKey, jobId);
+    local isLimited = rcall("SISMEMBER", limitedSetKey, jobId)
 
     if isLimited == 1 then
         -- Remove from limited zset since we are going to try to process it
@@ -116,6 +117,7 @@ local rateLimit = function(jobId, maxJobs, mode)
     if (jobCounter == nil) then
         jobCounter = 0
     end
+    
     -- check if rate limit hit
     if (delay == 0) and (jobCounter >= maxJobs) then
         -- Seems like there are no current rated limited jobs, but the jobCounter has exceeded the number of jobs for this unit of time so we need to rate limit this job.
@@ -134,7 +136,6 @@ local rateLimit = function(jobId, maxJobs, mode)
 
             -- store index so that we can delete rate limited data
             rcall("HSET", limiterIndexTable, jobId, limitedSetKey)
-            
         end
 
         -- remove from active queue
@@ -165,9 +166,9 @@ end
 if jobId then
     -- Check if we need to perform rate limiting.
     local maxJobs = tonumber(ARGV[6])
+    local mode = ARGV[9] or "time"
 
     if maxJobs then
-        local mode = ARGV[10] or "time" -- По умолчанию время, если не указан режим
         if rateLimit(jobId, maxJobs, mode) then
             return
         end
@@ -180,7 +181,9 @@ if jobId then
 
     -- remove from priority
     rcall("ZREM", KEYS[3], jobId)
+
     rcall("PUBLISH", KEYS[4], jobId)
+
     rcall("HSET", jobKey, "processedOn", ARGV[4])
 
     return {rcall("HGETALL", jobKey), jobId} -- get job data

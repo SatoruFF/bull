@@ -14,7 +14,7 @@
       KEYS[7] delayed key
       KEYS[8] stalled key
       KEYS[9] metrics key
-      KEYS[10] rate limiter key  -- ДОБАВЛЕН
+      KEYS[10] rate limiter key
 
       ARGV[1]  jobId
       ARGV[2]  timestamp
@@ -28,8 +28,8 @@
       ARGV[10] lock token
       ARGV[11] lock duration in milliseconds
       ARGV[12] maxMetricsSize
-      ARGV[13] rate limit group key (optional)  -- ДОБАВЛЕН
-      ARGV[14] rate limit mode (optional)       -- ДОБАВЛЕН
+      ARGV[13] rate limit group key (optional)
+      ARGV[14] rate limit mode (optional)
 
      Output:
       0 OK
@@ -49,20 +49,23 @@ local rcall = redis.call
 
 -- Function to decrement rate limiter counter
 local function decrementRateLimiter(rateLimiterKey, jobId, groupKey, mode)
-    if mode == "count" and rateLimiterKey then
-        local counterKey = rateLimiterKey .. ":counter"
+    if mode == "count" and rateLimiterKey and rateLimiterKey ~= "" then
+        -- Apply the same grouping logic as in moveToActive
+        local actualRateLimiterKey = rateLimiterKey
 
         -- Rate limit by group?
-        if groupKey then
-            if type(groupKey) == "string" then
-                counterKey = rateLimiterKey .. ":" .. groupKey .. ":counter"
-            elseif groupKey == "true" then
+        if groupKey and groupKey ~= "" then
+            if groupKey == "true" then
                 local group = string.match(jobId, "[^:]+$")
                 if group ~= nil then
-                    counterKey = rateLimiterKey .. ":" .. group .. ":counter"
+                    actualRateLimiterKey = rateLimiterKey .. ":" .. group
                 end
+            else
+                actualRateLimiterKey = rateLimiterKey .. ":" .. groupKey
             end
         end
+
+        local counterKey = actualRateLimiterKey .. ":counter"
 
         -- Decrement the counter
         local currentCount = tonumber(rcall("GET", counterKey)) or 0
@@ -83,7 +86,7 @@ if rcall("EXISTS", KEYS[3]) == 1 then -- // Make sure job exists
 
     if numRemovedElements < 1 then return -3 end
 
-    if KEYS[10] then
+    if KEYS[10] and KEYS[10] ~= "" then
         decrementRateLimiter(KEYS[10], ARGV[1], ARGV[13], ARGV[14])
     end
 
@@ -148,7 +151,7 @@ if rcall("EXISTS", KEYS[3]) == 1 then -- // Make sure job exists
             local lockKey = jobKey .. ':lock'
 
             -- get a lock
-            rcall("SET", lockKey, ARGV[11], "PX", ARGV[10])
+            rcall("SET", lockKey, ARGV[10], "PX", ARGV[11]) 
 
             rcall("ZREM", KEYS[5], jobId) -- remove from priority
             rcall("PUBLISH", KEYS[6], jobId)
