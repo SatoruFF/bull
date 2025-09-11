@@ -48,20 +48,16 @@ local rcall = redis.call
 --- @include "includes/removeDebounceKeyIfNeeded"
 
 -- Function to decrement rate limiter counter
-local function decrementRateLimiter(rateLimiterKey, jobId, groupKey, mode)
+local function decrementRateLimiter(rateLimiterKey, jobId, hasGroupKey, mode)
     if mode == "count" and rateLimiterKey and rateLimiterKey ~= "" then
         -- Apply the same grouping logic as in moveToActive
         local actualRateLimiterKey = rateLimiterKey
 
         -- Rate limit by group?
-        if groupKey and groupKey ~= "" then
-            if groupKey == "true" then
-                local group = string.match(jobId, "[^:]+$")
-                if group ~= nil then
-                    actualRateLimiterKey = rateLimiterKey .. ":" .. group
-                end
-            else
-                actualRateLimiterKey = rateLimiterKey .. ":" .. groupKey
+        if hasGroupKey == "true" then
+            local group = string.match(jobId, "[^:]+$")
+            if group ~= nil then
+                actualRateLimiterKey = rateLimiterKey .. ":" .. group
             end
         end
 
