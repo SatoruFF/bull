@@ -34,6 +34,10 @@
 local rcall = redis.call
 
 local function rateLimit(jobId, maxJobs, mode)
+    if maxJobs == 0 then
+        -- Лимит 0 → воспринимаем как "нет лимита"? Ситуация по сути не валидная
+        return false
+    end
     local rateLimiterKey = KEYS[6]
     local limiterIndexTable = rateLimiterKey .. ":index"
 
@@ -46,9 +50,6 @@ local function rateLimit(jobId, maxJobs, mode)
             if group ~= nil then
                 rateLimiterKey = rateLimiterKey .. ":" .. group
             end
-        else
-            -- Иначе используем ARGV[10] как groupKey
-            rateLimiterKey = rateLimiterKey .. ":" .. ARGV[10]
         end
     end
 
@@ -63,7 +64,8 @@ local function rateLimit(jobId, maxJobs, mode)
         -- Check if the jobs limit has been exceeded
         if currentCount >= maxJobs then
             -- The counter limit has been exceeded - the job must be postponed
-            local timestamp = tonumber(ARGV[4]) + 1000
+            local duration = tonumber(ARGV[7]) or 1000  -- fallback 1000ms
+            local timestamp = tonumber(ARGV[4]) + duration
 
             -- Putting the job in the delayed queue
             rcall("ZADD", KEYS[7], timestamp * 0x1000, jobId)
